@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
@@ -152,4 +152,111 @@
         });
   </script>
 </body>
+</html> -->
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>WebXR GPS Pipe</title>
+    <style>
+      html, body { margin: 0;
+      padding: 0;
+      overflow: hidden;
+      height: 100%;
+      width: 100%;
+      background: #000; }
+      #enter-ar { position: absolute;
+      top: 30%;
+      left: 50%;
+      transform: translateX(-50%);
+      padding: 10px 20px;
+      font-size: 25px;
+      border-radius: 10px;
+      border: white;
+      background: #2196f3;
+      color: white;
+      cursor: pointer;
+      z-index: 10; }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+  </head>
+  <body>
+    <button id="enter-ar">Enter AR</button>
+    <script>
+      let camera, scene, renderer;
+
+      // --- Utility: convert lat/lon difference to meters (flat earth approximation) ---
+      function latLonToMeters(lat1, lon1, lat2, lon2) {
+        const R = 6378137; // Earth radius in meters
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const x = dLon * R * Math.cos(lat1 * Math.PI / 180);
+        const z = dLat * R;
+        return { x, z };
+      }
+
+      async function initXR(startLat, startLon, endLat, endLon) {
+        scene = new THREE.Scene();
+        camera = new THREE.PerspectiveCamera();
+
+        // WebGL1 for iOS compatibility
+        const canvas = document.createElement("canvas");
+        const gl = canvas.getContext("webgl", { xrCompatible: true });
+        renderer = new THREE.WebGLRenderer({ canvas: canvas, context: gl, alpha: true });
+        renderer.xr.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        const button = document.getElementById("enter-ar");
+        button.addEventListener("click", async () => {
+          const session = await navigator.xr.requestSession("immersive-ar", {
+            requiredFeatures: ["local"]
+          });
+          renderer.xr.setSession(session);
+
+          // Use start point as local origin (0,0,0)
+          const p1 = { x: 0, y: -1, z: 0 };
+          const offset = latLonToMeters(startLat, startLon, endLat, endLon);
+          const p2 = { x: offset.x, y: -1, z: offset.z };
+
+          // Draw pipe
+          const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+          const pipe = makePipe(p1, p2, 0.1, material);
+          scene.add(pipe);
+
+          renderer.setAnimationLoop(() => {
+            renderer.render(scene, camera);
+          });
+        });
+      }
+
+      // Create a cylinder between two points
+      function makePipe(start, end, radius, material) {
+        const dir = new THREE.Vector3(end.x - start.x, end.y - start.y, end.z - start.z);
+        const len = dir.length();
+        const geom = new THREE.CylinderGeometry(radius, radius, len, 16);
+        const mesh = new THREE.Mesh(geom, material);
+
+        // Position & orient
+        const mid = new THREE.Vector3(
+          (start.x + end.x) / 2,
+          (start.y + end.y) / 2,
+          (start.z + end.z) / 2
+        );
+        mesh.position.copy(mid);
+
+        const axis = new THREE.Vector3(0, 1, 0);
+        mesh.quaternion.setFromUnitVectors(axis, dir.clone().normalize());
+
+        return mesh;
+      }
+
+      // --- Define start & end coordinates (replace with your own) ---
+      const startLat = 23.0118, startLon = 72.5085;
+      const endLat   = 23.0143, endLon   = 72.5120;
+
+      // Initialize
+      initXR(startLat, startLon, endLat, endLon);
+    </script>
+  </body>
 </html>
