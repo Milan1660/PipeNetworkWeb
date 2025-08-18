@@ -158,26 +158,10 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>WebXR GPS Pipe</title>
+    <title>Pipe Network Web</title>
     <style>
-      html, body { margin: 0;
-      padding: 0;
-      overflow: hidden;
-      height: 100%;
-      width: 100%;
-      background: #000; }
-      #enter-ar { position: absolute;
-      top: 30%;
-      left: 50%;
-      transform: translateX(-50%);
-      padding: 10px 20px;
-      font-size: 25px;
-      border-radius: 10px;
-      border: white;
-      background: #2196f3;
-      color: white;
-      cursor: pointer;
-      z-index: 10; }
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+      #enter-ar { position: absolute; top: 20px; left: 20px; padding: 10px 20px; background: white; }
     </style>
     <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
   </head>
@@ -186,7 +170,7 @@
     <script>
       let camera, scene, renderer;
 
-      // --- Utility: convert lat/lon difference to meters (flat earth approximation) ---
+      // --- Convert lat/lon difference to meters ---
       function latLonToMeters(lat1, lon1, lat2, lon2) {
         const R = 6378137; // Earth radius in meters
         const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -200,11 +184,9 @@
         scene = new THREE.Scene();
         camera = new THREE.PerspectiveCamera();
 
-        // WebGL1 for iOS compatibility
-        const canvas = document.createElement("canvas");
-        const gl = canvas.getContext("webgl", { xrCompatible: true });
-        renderer = new THREE.WebGLRenderer({ canvas: canvas, context: gl, alpha: true });
+        renderer = new THREE.WebGLRenderer({ alpha: true });
         renderer.xr.enabled = true;
+        renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
         const button = document.getElementById("enter-ar");
@@ -214,10 +196,10 @@
           });
           renderer.xr.setSession(session);
 
-          // Use start point as local origin (0,0,0)
-          const p1 = { x: 0, y: -1, z: 0 };
+          // Use start point as origin (0,0, -2) → always 2m in front of camera
+          const p1 = { x: 0, y: -1, z: -2 };
           const offset = latLonToMeters(startLat, startLon, endLat, endLon);
-          const p2 = { x: offset.x, y: -1, z: offset.z };
+          const p2 = { x: offset.x, y: -1, z: offset.z - 2 };
 
           // Draw pipe
           const material = new THREE.MeshBasicMaterial({ color: 0xff0000 });
@@ -251,11 +233,10 @@
         return mesh;
       }
 
-      // --- Define start & end coordinates (replace with your own) ---
+      // --- Replace with your coordinates ---
       const startLat = 23.0118, startLon = 72.5085;
       const endLat   = 23.0143, endLon   = 72.5120;
 
-      // Initialize
       initXR(startLat, startLon, endLat, endLon);
     </script>
   </body>
