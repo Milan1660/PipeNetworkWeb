@@ -109,6 +109,22 @@
       return mesh;
     }
 
+    // Request location (for origin placement)
+navigator.geolocation.getCurrentPosition(
+  (pos) => {
+    window.startingLat = pos.coords.latitude;
+    window.startingLon = pos.coords.longitude;
+    console.log("Got location:", startingLat, startingLon);
+  },
+  (err) => console.error("Location denied:", err),
+  { enableHighAccuracy: true }
+);
+
+// Then start AR session (this will trigger camera permission)
+navigator.xr.requestSession("immersive-ar", {
+  requiredFeatures: ["hit-test", "local-floor"]
+});
+
     // ---------- WebXR session + hit testing ----------
     let xrRefSpace = null; let hitTestSource = null; let placed = false; let anchor = null;
 
