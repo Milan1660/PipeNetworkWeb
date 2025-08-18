@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WebXR AR Pipes/Cables — Three.js (DIY)</title>
+  <style>
+    html, body { margin:0; height:100%; overflow:hidden; background:#000; }
+    #ui {
+      position: fixed; left: 12px; right: 12px; bottom: 12px; z-index: 10;
+      display: grid; gap: 8px; grid-template-columns: repeat(4, minmax(0, 1fr));
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    }
+    .card { background: rgba(20,20,20,.6); backdrop-filter: blur(6px); border-radius: 12px; padding: 10px; color:#fff; }
+    button, select { width:100%; padding:10px 12px; border-radius:10px; border:1px solid #444; background:#111; color:#fff; font-weight:600; cursor:pointer; }
+    button:disabled { opacity:.5; cursor:not-allowed; }
+    #log { font-size: 12px; line-height: 1.25; max-height: 22vh; overflow:auto; white-space: pre-wrap; }
+    #coords { width:100%; height:66px; border-radius:8px; border:1px solid #444; background:#0b0b0b; color:#ddd; padding:8px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+    #banner { position:fixed; top:12px; left:12px; right:12px; z-index:10; display:flex; gap:8px; align-items:center; }
+    #banner .card { display:flex; gap:10px; align-items:center; }
+  </style>
+  <script type="module">
+    // --- Imports (Three.js + helpers) ---
+    import * as THREE from "https://unpkg.com/three@0.160.0/build/three.module.js";
+    import { ARButton } from "https://unpkg.com/three@0.160.0/examples/jsm/webxr/ARButton.js";
+
+    // ---------- Basic Three.js / WebXR setup ----------
+    const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.xr.enabled = true;
+    document.body.appendChild(renderer.domElement);
+
+    const scene = new THREE.Scene();
+    const camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 1000);
+
+    // Lighting for PBR materials
+    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+    const dir = new THREE.DirectionalLight(0xffffff, 0.8); dir.position.set(1,2,1); scene.add(dir);
+
+    // A group that will be anchored to the real world at the user's tap
+    const worldGroup = new THREE.Group();
+    scene.add(worldGroup);
+
+    // Reticle to show hit-test position
+    const reticle = new THREE.Mesh(
+      new THREE.RingGeometry(0.08, 0.1, 32).rotateX(-Math.PI/2),
+      new THREE.MeshBasicMaterial({ color:0x00ffcc })
+    );
+    reticle.matrixAutoUpdate = false; reticle.visible = false; scene.add(reticle);
+
+    // --- Simple logger ---
+    const logEl = document.createElement('div');
+    function log(msg){ logEl.textContent += `\n${msg}`; logEl.scrollTop = logEl.scrollHeight; }
+
+    // ---------- Geo helpers (WGS84 -> local ENU meters) ----------
+    let originLat = null, originLon = null; // degrees, captured when placing origin
+    const EARTH_M_PER_DEG_LAT = 111320.0; // meters per degree latitude
+    function metersPerDegLon(latDeg){ return 111320.0 * Math.cos(latDeg * Math.PI/180); }
+
+    function wgs84ToLocal(lat, lon, altMeters = 0){
+      if(originLat === null || originLon === null){ throw new Error('Origin not set'); }
+      const dx = (lon - originLon) * metersPerDegLon(originLat); // East (+x)
+      const dzNorth = (lat - originLat) * EARTH_M_PER_DEG_LAT;   // North (+)
+      // Three.js/Z forward is toward the viewer; we choose +z as South so North becomes -z
+      const z = -dzNorth; // South (+), North (-)
+      return new THREE.Vector3(dx, altMeters, z);
+    }
+
+    // ---------- Build tubes (pipes/cables) ----------
+    function buildTubeFromLine(localPoints, radiusMeters, color){
+      // Ensure at least 2 points
+      if(localPoints.length < 2) throw new Error('Need at least 2 points');
+      const curve = new THREE.CatmullRomCurve3(localPoints);
+      const tubularSegments = Math.max(20, localPoints.length * 12);
+      const radialSegments = 16;
+      const geometry = new THREE.TubeGeometry(curve, tubularSegments, radiusMeters, radialSegments, false);
+      const material = new THREE.MeshStandardMaterial({ color });
+      const mesh = new THREE.Mesh(geometry, material);
+      return mesh;
+    }
+
+    // Demo coordinates (near your Ahmedabad area example). Replace with your own.
+    // Each item: [lat, lon, altitudeMeters]
+    const demoPipeWGS84 = {
+      type: 'pipe', // blue, thicker, underground
+      points: [
+        [23.0120, 72.5085, -1.5],
+        [23.0132, 72.5099, -1.5],
+        [23.0145, 72.5120, -1.5]
+      ]
+    };
+
+    const demoCableWGS84 = {
+      type: 'cable', // red, thinner, above ground
+      points: [
+        [23.0118, 72.5085, 3.0],
+        [23.0128, 72.5103, 3.0],
+        [23.0143, 72.5120, 3.0]
+      ]
+    };
+
+    // Convert a WGS84 polyline to a tube mesh and add to world
+    function addWgs84Tube(poly, opts){
+      const { radius=0.25, color=0x0000ff } = opts || {};
+      const local = poly.points.map(([lat,lon,alt]) => wgs84ToLocal(lat,lon,alt));
+      const mesh = buildTubeFromLine(local, radius, color);
+      worldGroup.add(mesh);
+      return mesh;
+    }
+
+    // ---------- WebXR session + hit testing ----------
+    let xrRefSpace = null; let hitTestSource = null; let placed = false; let anchor = null;
+
+    async function onSessionStart(){
+      log('XR session started');
+      const session = renderer.xr.getSession();
+
+      // Reference space
+      xrRefSpace = await session.requestReferenceSpace('local');
+
+      // Hit-test setup
+      const viewerSpace = await session.requestReferenceSpace('viewer');
+      const hitTestSourceRequested = await session.requestHitTestSource({ space: viewerSpace });
+      hitTestSource = hitTestSourceRequested;
+
+      // Tap to place origin (and create anchor if supported)
+      session.addEventListener('select', async (ev) => {
+        if(!reticle.visible){ log('Aim at a surface until the ring appears'); return; }
+        if(placed){ log('Origin already placed.'); return; }
+
+        const frame = ev.frame;
+        const pose = new XRRigidTransform(); // identity, we use reticle.matrix instead
+
+        try{
+          if(session.requestAnchor){
+            anchor = await session.requestAnchor(new XRRigidTransform(), renderer.xr.getReferenceSpace());
+          }
+        }catch(e){ /* anchors not supported */ }
+
+        // Parent worldGroup at reticle pose
+        const m = new THREE.Matrix4(); m.fromArray(reticle.matrix.elements);
+        // Extract position/rotation from reticle matrix
+        const pos = new THREE.Vector3(); const quat = new THREE.Quaternion(); const scl = new THREE.Vector3();
+        m.decompose(pos, quat, scl);
+        worldGroup.position.copy(pos); worldGroup.quaternion.copy(quat);
+        placed = true; log('Origin placed. Fetching geolocation...');
+
+        // Get device lat/lon at the moment we place the origin
+        navigator.geolocation.getCurrentPosition((p)=>{
+          originLat = p.coords.latitude; originLon = p.coords.longitude;
+          log(`Origin WGS84 set at lat ${originLat.toFixed(6)}, lon ${originLon.toFixed(6)}`);
+          // Add demo tubes
+          addWgs84Tube(demoPipeWGS84, { radius:0.35, color:0x0077ff });
+          addWgs84Tube(demoCableWGS84, { radius:0.12, color:0xff3333 });
+        }, (err)=>{
+          log('Geolocation failed: ' + err.message);
+        }, { enableHighAccuracy:true, maximumAge:0, timeout:10000 });
+      });
+
+      // Per-frame render (hit testing for reticle)
+      renderer.setAnimationLoop((time, frame) => {
+        if(frame && hitTestSource){
+          const viewerPose = frame.getViewerPose(xrRefSpace);
+          if(viewerPose){
+            const results = frame.getHitTestResults(hitTestSource);
+            if(results.length){
+              const pose = results[0].getPose(xrRefSpace);
+              reticle.visible = true;
+              reticle.matrix.fromArray(pose.transform.matrix);
+            }else{
+              reticle.visible = false;
+            }
+          }
+        }
+        renderer.render(scene, camera);
+      });
+    }
+
+    function onSessionEnd(){
+      renderer.setAnimationLoop(null); placed = false; hitTestSource = null; xrRefSpace = null; anchor = null;
+      log('XR session ended');
+    }
+
+    // ---------- UI ----------
+    const ui = document.createElement('div'); ui.id = 'ui';
+    const banner = document.createElement('div'); banner.id = 'banner';
+
+    const help = document.createElement('div'); help.className = 'card';
+    help.innerHTML = '<b>How to use:</b> Start AR → move phone until turquoise ring appears → tap to set origin → pipes/cables appear aligned to your WGS84 sample.';
+
+    const startBtn = document.createElement('div');
+    startBtn.className = 'card';
+    startBtn.appendChild(ARButton.createButton(renderer, {
+      requiredFeatures: ['hit-test', 'local-floor'],
+      optionalFeatures: ['anchors']
+    }));
+
+    const actions = document.createElement('div'); actions.className = 'card'; actions.style.gridColumn = 'span 2';
+    const coords = document.createElement('textarea'); coords.id = 'coords';
+    coords.placeholder = 'Paste a GeoJSON LineString here to render as a pipe/cable (in WGS84). Example:\n{"type":"LineString","coordinates":[[72.5085,23.0120,-1.5],[72.5120,23.0145,-1.5]]}';
+    const typeSel = document.createElement('select'); typeSel.innerHTML = '<option value="pipe">Pipe (blue)</option><option value="cable">Cable (red)</option>';
+    const addBtn = document.createElement('button'); addBtn.textContent = 'Add Tube from GeoJSON'; addBtn.disabled = true;
+
+    actions.appendChild(typeSel);
+    actions.appendChild(coords);
+    actions.appendChild(addBtn);
+
+    const logger = document.createElement('div'); logger.className = 'card'; logger.id = 'log'; logger.textContent = 'Log:'; logEl.id = 'logInner'; logger.appendChild(logEl);
+
+    banner.appendChild(help);
+    document.body.appendChild(banner);
+
+    ui.appendChild(startBtn);
+    ui.appendChild(actions);
+    ui.appendChild(logger);
+    document.body.appendChild(ui);
+
+    // Enable add button after origin placed & geolocation acquired
+    function maybeEnableAdd(){ addBtn.disabled = (originLat===null || originLon===null || !placed); }
+    const geoWatch = navigator.geolocation.watchPosition(()=>{ maybeEnableAdd(); }, ()=>{}, { maximumAge: 2000 });
+
+    addBtn.addEventListener('click', ()=>{
+      try{
+        if(!placed){ return log('Place origin first.'); }
+        const text = coords.value.trim(); if(!text){ return log('Paste GeoJSON LineString first.'); }
+        const gj = JSON.parse(text);
+        if(gj.type !== 'LineString' || !Array.isArray(gj.coordinates)) return log('Invalid GeoJSON LineString.');
+        const asPoly = { points: gj.coordinates.map(([lon,lat,alt=0])=>[lat,lon,alt]) };
+        const isPipe = (typeSel.value === 'pipe');
+        addWgs84Tube(asPoly, { radius: isPipe? 0.3 : 0.12, color: isPipe? 0x2a7bff : 0xff4040 });
+        log('Added tube from GeoJSON.');
+      }catch(e){ log('Error: ' + e.message); }
+    });
+
+    // Hook WebXR session events
+    renderer.xr.addEventListener('sessionstart', onSessionStart);
+    renderer.xr.addEventListener('sessionend', onSessionEnd);
+
+    // Resize handler
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+  </script>
+</head>
+<body></body>
+</html>
