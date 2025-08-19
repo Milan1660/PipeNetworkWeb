@@ -154,7 +154,7 @@
 </body>
 </html> -->
 
-<!DOCTYPE html>
+<!-- <!DOCTYPE html>
 <html>
   <head>
     <meta charset="utf-8" />
@@ -238,4 +238,418 @@
       initXR();
     </script>
   </body>
+</html> -->
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebXR GPS Cylinder Placement</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            font-family: Arial, sans-serif;
+            background: #000;
+            color: #fff;
+            overflow: hidden;
+        }
+        
+        #info {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            z-index: 100;
+            background: rgba(0, 0, 0, 0.8);
+            padding: 10px;
+            border-radius: 5px;
+            font-size: 12px;
+            max-width: 300px;
+        }
+        
+        #controls {
+            position: absolute;
+            bottom: 10px;
+            left: 10px;
+            right: 10px;
+            z-index: 100;
+            text-align: center;
+        }
+        
+        button {
+            background: #0066cc;
+            color: white;
+            border: none;
+            padding: 12px 20px;
+            margin: 5px;
+            border-radius: 5px;
+            font-size: 14px;
+            cursor: pointer;
+            transition: background 0.3s;
+        }
+        
+        button:hover {
+            background: #0052a3;
+        }
+        
+        button:disabled {
+            background: #666;
+            cursor: not-allowed;
+        }
+        
+        .status {
+            color: #00ff00;
+        }
+        
+        .error {
+            color: #ff6666;
+        }
+        
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h3>WebXR GPS Cylinder Placement</h3>
+        <div>Status: <span id="status">Initializing...</span></div>
+        <div>GPS: <span id="gps-info">Waiting for location...</span></div>
+        <div>Distance to Start: <span id="start-distance">-</span></div>
+        <div>Distance to End: <span id="end-distance">-</span></div>
+        <div>Heading: <span id="heading">-</span></div>
+    </div>
+    
+    <div id="controls">
+        <button id="ar-button" disabled>Enter AR</button>
+        <button id="set-start">Set Start Location</button>
+        <button id="set-end">Set End Location</button>
+    </div>
+    
+    <canvas id="canvas"></canvas>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    
+    <script>
+        class WebXRGeoSpatial {
+            constructor() {
+                this.scene = null;
+                this.camera = null;
+                this.renderer = null;
+                this.session = null;
+                this.referenceSpace = null;
+                
+                // GPS and positioning
+                this.userPosition = { lat: 0, lon: 0, accuracy: 0 };
+                this.startLocation = { lat: 37.7749, lon: -122.4194 }; // San Francisco default
+                this.endLocation = { lat: 37.7849, lon: -122.4094 }; // 1km away
+                this.gpsWatcher = null;
+                this.compassHeading = 0;
+                
+                // 3D objects
+                this.startCylinder = null;
+                this.endCylinder = null;
+                this.positionHistory = [];
+                this.maxHistorySize = 5;
+                
+                // Elements
+                this.statusEl = document.getElementById('status');
+                this.gpsInfoEl = document.getElementById('gps-info');
+                this.startDistanceEl = document.getElementById('start-distance');
+                this.endDistanceEl = document.getElementById('end-distance');
+                this.headingEl = document.getElementById('heading');
+                this.arButton = document.getElementById('ar-button');
+                
+                this.init();
+            }
+            
+            async init() {
+                this.updateStatus('Checking WebXR support...');
+                
+                // Check WebXR support
+                if (!navigator.xr) {
+                    this.updateStatus('WebXR not supported', true);
+                    return;
+                }
+                
+                try {
+                    const supported = await navigator.xr.isSessionSupported('immersive-ar');
+                    if (!supported) {
+                        this.updateStatus('AR not supported on this device', true);
+                        return;
+                    }
+                } catch (error) {
+                    this.updateStatus('Error checking AR support: ' + error.message, true);
+                    return;
+                }
+                
+                this.setupThreeJS();
+                this.setupGPS();
+                this.setupCompass();
+                this.setupEventListeners();
+                
+                this.arButton.disabled = false;
+                this.updateStatus('Ready for AR');
+            }
+            
+            setupThreeJS() {
+                // Scene
+                this.scene = new THREE.Scene();
+                
+                // Camera
+                this.camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+                
+                // Renderer
+                this.renderer = new THREE.WebGLRenderer({
+                    canvas: document.getElementById('canvas'),
+                    antialias: true,
+                    alpha: true
+                });
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+                this.renderer.xr.enabled = true;
+                
+                // Lighting
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                this.scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(1, 1, 0.5);
+                this.scene.add(directionalLight);
+                
+                // Create cylinders
+                this.createCylinders();
+                
+                // Start render loop
+                this.renderer.setAnimationLoop(() => this.render());
+            }
+            
+            createCylinders() {
+                // Start location cylinder (green)
+                const startGeometry = new THREE.CylinderGeometry(1, 1, 3, 16);
+                const startMaterial = new THREE.MeshLambertMaterial({ color: 0x00ff00 });
+                this.startCylinder = new THREE.Mesh(startGeometry, startMaterial);
+                this.scene.add(this.startCylinder);
+                
+                // End location cylinder (red)
+                const endGeometry = new THREE.CylinderGeometry(1, 1, 3, 16);
+                const endMaterial = new THREE.MeshLambertMaterial({ color: 0xff0000 });
+                this.endCylinder = new THREE.Mesh(endGeometry, endMaterial);
+                this.scene.add(this.endCylinder);
+                
+                // Position cylinders based on initial locations
+                this.updateCylinderPositions();
+            }
+            
+            setupGPS() {
+                if (!navigator.geolocation) {
+                    this.updateStatus('GPS not supported', true);
+                    return;
+                }
+                
+                const options = {
+                    enableHighAccuracy: true,
+                    timeout: 10000,
+                    maximumAge: 1000
+                };
+                
+                this.gpsWatcher = navigator.geolocation.watchPosition(
+                    (position) => this.onGPSUpdate(position),
+                    (error) => this.onGPSError(error),
+                    options
+                );
+            }
+            
+            setupCompass() {
+                if ('DeviceOrientationEvent' in window) {
+                    window.addEventListener('deviceorientation', (event) => {
+                        if (event.alpha !== null) {
+                            this.compassHeading = event.alpha;
+                            this.headingEl.textContent = Math.round(event.alpha) + '°';
+                        }
+                    });
+                }
+            }
+            
+            setupEventListeners() {
+                this.arButton.addEventListener('click', () => this.enterAR());
+                
+                document.getElementById('set-start').addEventListener('click', () => {
+                    if (this.userPosition.lat !== 0) {
+                        this.startLocation = { ...this.userPosition };
+                        this.updateCylinderPositions();
+                        this.updateStatus('Start location set to current position');
+                    }
+                });
+                
+                document.getElementById('set-end').addEventListener('click', () => {
+                    if (this.userPosition.lat !== 0) {
+                        this.endLocation = { ...this.userPosition };
+                        this.updateCylinderPositions();
+                        this.updateStatus('End location set to current position');
+                    }
+                });
+                
+                window.addEventListener('resize', () => this.onWindowResize());
+            }
+            
+            onGPSUpdate(position) {
+                const newPos = {
+                    lat: position.coords.latitude,
+                    lon: position.coords.longitude,
+                    accuracy: position.coords.accuracy
+                };
+                
+                // Add to history for smoothing
+                this.positionHistory.push(newPos);
+                if (this.positionHistory.length > this.maxHistorySize) {
+                    this.positionHistory.shift();
+                }
+                
+                // Calculate smoothed position
+                this.userPosition = this.calculateSmoothedPosition();
+                
+                // Update UI
+                this.gpsInfoEl.innerHTML = `
+                    Lat: ${this.userPosition.lat.toFixed(6)}<br>
+                    Lon: ${this.userPosition.lon.toFixed(6)}<br>
+                    Accuracy: ${Math.round(this.userPosition.accuracy)}m
+                `;
+                
+                // Update distances
+                const startDistance = this.calculateDistance(this.userPosition, this.startLocation);
+                const endDistance = this.calculateDistance(this.userPosition, this.endLocation);
+                
+                this.startDistanceEl.textContent = Math.round(startDistance) + 'm';
+                this.endDistanceEl.textContent = Math.round(endDistance) + 'm';
+                
+                // Update cylinder positions
+                this.updateCylinderPositions();
+            }
+            
+            onGPSError(error) {
+                this.updateStatus(`GPS Error: ${error.message}`, true);
+            }
+            
+            calculateSmoothedPosition() {
+                if (this.positionHistory.length === 0) return this.userPosition;
+                
+                let totalLat = 0, totalLon = 0, totalWeight = 0;
+                
+                this.positionHistory.forEach(pos => {
+                    const weight = 1 / Math.max(pos.accuracy, 1); // Higher weight for more accurate readings
+                    totalLat += pos.lat * weight;
+                    totalLon += pos.lon * weight;
+                    totalWeight += weight;
+                });
+                
+                return {
+                    lat: totalLat / totalWeight,
+                    lon: totalLon / totalWeight,
+                    accuracy: this.positionHistory[this.positionHistory.length - 1].accuracy
+                };
+            }
+            
+            updateCylinderPositions() {
+                if (this.userPosition.lat === 0) return;
+                
+                // Convert GPS coordinates to 3D positions relative to user
+                const startPos = this.gpsToWorld(this.userPosition, this.startLocation);
+                const endPos = this.gpsToWorld(this.userPosition, this.endLocation);
+                
+                // Position cylinders
+                this.startCylinder.position.set(startPos.x, startPos.y + 1.5, startPos.z);
+                this.endCylinder.position.set(endPos.x, endPos.y + 1.5, endPos.z);
+                
+                // Add some animation
+                this.startCylinder.rotation.y += 0.01;
+                this.endCylinder.rotation.y -= 0.01;
+            }
+            
+            gpsToWorld(userPos, targetPos) {
+                const R = 6371000; // Earth's radius in meters
+                
+                // Convert to radians
+                const userLatRad = userPos.lat * Math.PI / 180;
+                const targetLatRad = targetPos.lat * Math.PI / 180;
+                const dLat = (targetPos.lat - userPos.lat) * Math.PI / 180;
+                const dLon = (targetPos.lon - userPos.lon) * Math.PI / 180;
+                
+                // Calculate relative position in meters
+                const x = dLon * Math.cos(userLatRad) * R;
+                const z = dLat * R;
+                
+                // Apply compass heading rotation
+                const heading = (this.compassHeading || 0) * Math.PI / 180;
+                const rotatedX = x * Math.cos(-heading) - z * Math.sin(-heading);
+                const rotatedZ = x * Math.sin(-heading) + z * Math.cos(-heading);
+                
+                return { x: rotatedX, y: 0, z: -rotatedZ }; // Negative Z for correct orientation
+            }
+            
+            calculateDistance(pos1, pos2) {
+                const R = 6371000; // Earth's radius in meters
+                const dLat = (pos2.lat - pos1.lat) * Math.PI / 180;
+                const dLon = (pos2.lon - pos1.lon) * Math.PI / 180;
+                const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                         Math.cos(pos1.lat * Math.PI / 180) * Math.cos(pos2.lat * Math.PI / 180) *
+                         Math.sin(dLon/2) * Math.sin(dLon/2);
+                const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+                return R * c;
+            }
+            
+            async enterAR() {
+                try {
+                    this.updateStatus('Starting AR session...');
+                    
+                    this.session = await navigator.xr.requestSession('immersive-ar', {
+                        requiredFeatures: ['local-floor']
+                    });
+                    
+                    this.referenceSpace = await this.session.requestReferenceSpace('local-floor');
+                    this.renderer.xr.setSession(this.session);
+                    
+                    this.session.addEventListener('end', () => {
+                        this.updateStatus('AR session ended');
+                        this.session = null;
+                        this.arButton.textContent = 'Enter AR';
+                    });
+                    
+                    this.arButton.textContent = 'Exit AR';
+                    this.updateStatus('AR session active');
+                    
+                } catch (error) {
+                    this.updateStatus(`Failed to start AR: ${error.message}`, true);
+                }
+            }
+            
+            render() {
+                if (this.session) {
+                    this.updateCylinderPositions();
+                }
+                this.renderer.render(this.scene, this.camera);
+            }
+            
+            onWindowResize() {
+                this.camera.aspect = window.innerWidth / window.innerHeight;
+                this.camera.updateProjectionMatrix();
+                this.renderer.setSize(window.innerWidth, window.innerHeight);
+            }
+            
+            updateStatus(message, isError = false) {
+                this.statusEl.textContent = message;
+                this.statusEl.className = isError ? 'error' : 'status';
+                console.log(`Status: ${message}`);
+            }
+        }
+        
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', () => {
+            new WebXRGeoSpatial();
+        });
+    </script>
+</body>
 </html>
