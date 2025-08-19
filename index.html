@@ -319,15 +319,13 @@
         <h3>WebXR GPS Cylinder Placement</h3>
         <div>Status: <span id="status">Initializing...</span></div>
         <div>GPS: <span id="gps-info">Waiting for location...</span></div>
-        <div>Current Location: <span id="start-distance">-</span></div>
-        <div>Target Location: <span id="end-distance">-</span></div>
-        <div>Animation: <span id="animation-status">Ready</span></div>
+        <div>Start Distance: <span id="start-distance">-</span></div>
+        <div>End Distance: <span id="end-distance">-</span></div>
         <div>Heading: <span id="heading">-</span></div>
     </div>
     
     <div id="controls">
         <button id="ar-button" disabled>Enter AR</button>
-        <button id="start-animation">Start Animation</button>
     </div>
     
     <canvas id="canvas"></canvas>
@@ -345,17 +343,13 @@
                 
                 // GPS and positioning
                 this.userPosition = { lat: 0, lon: 0, accuracy: 0 };
-                this.startLocation = { lat: 21.23320862298896, lon: 72.86969701115827 }; // Replace with your start coordinates
-                this.endLocation = { lat: 21.233328292872862, lon: 72.86945379640414 }; // Replace with your end coordinates
+                this.startLocation = { lat: 21.233139, lon: 72.870094 }; // Replace with your start coordinates
+                this.endLocation = { lat: 21.233473686451035, lon: 72.86947464171197 }; // Replace with your end coordinates
                 this.gpsWatcher = null;
                 this.compassHeading = 0;
                 
-                // Single cylinder and animation
-                this.cylinder = null;
-                this.animationProgress = 0;
-                this.animationDuration = 5000; // 5 seconds
-                this.isAnimating = false;
-                this.animationStartTime = null;
+                // Single horizontal cylinder (pipe)
+                this.pipeCylinder = null;
                 this.positionHistory = [];
                 this.maxHistorySize = 5;
                 
@@ -366,7 +360,6 @@
                 this.endDistanceEl = document.getElementById('end-distance');
                 this.headingEl = document.getElementById('heading');
                 this.arButton = document.getElementById('ar-button');
-                this.animationStatusEl = document.getElementById('animation-status');
                 
                 this.init();
             }
@@ -432,14 +425,15 @@
             }
             
             createCylinders() {
-                // Single cylinder (blue)
-                const geometry = new THREE.CylinderGeometry(1, 1, 3, 16);
-                const material = new THREE.MeshLambertMaterial({ color: 0x0066ff });
-                this.cylinder = new THREE.Mesh(geometry, material);
-                this.scene.add(this.cylinder);
+                // Single horizontal cylinder (pipe) connecting start to end
+                const distance = this.calculateDistance(this.startLocation, this.endLocation);
+                const geometry = new THREE.CylinderGeometry(0.5, 0.5, distance, 16); // Smaller radius, length = distance
+                const material = new THREE.MeshLambertMaterial({ color: 0xffff00 });
+                this.pipeCylinder = new THREE.Mesh(geometry, material);
+                this.scene.add(this.pipeCylinder);
                 
-                // Position cylinder at start location initially
-                this.updateCylinderPosition();
+                // Position and orient the pipe
+                this.updatePipePosition();
             }
             
             setupGPS() {
@@ -474,11 +468,6 @@
             
             setupEventListeners() {
                 this.arButton.addEventListener('click', () => this.enterAR());
-                
-                document.getElementById('start-animation').addEventListener('click', () => {
-                    this.startAnimation();
-                });
-                
                 window.addEventListener('resize', () => this.onWindowResize());
             }
             
@@ -509,11 +498,11 @@
                 const startDistance = this.calculateDistance(this.userPosition, this.startLocation);
                 const endDistance = this.calculateDistance(this.userPosition, this.endLocation);
                 
-                this.startDistanceEl.textContent = Math.round(startDistance) + 'm to start';
-                this.endDistanceEl.textContent = Math.round(endDistance) + 'm to end';
+                this.startDistanceEl.textContent = Math.round(startDistance) + 'm';
+                this.endDistanceEl.textContent = Math.round(endDistance) + 'm';
                 
                 // Update cylinder position
-                this.updateCylinderPosition();
+                this.updatePipePosition();
             }
             
             onGPSError(error) {
@@ -539,76 +528,33 @@
                 };
             }
             
-            startAnimation() {
-                if (this.isAnimating) return;
+            updatePipePosition() {
+                if (this.userPosition.lat === 0 || !this.pipeCylinder) return;
                 
-                this.isAnimating = true;
-                this.animationProgress = 0;
-                this.animationStartTime = Date.now();
-                this.animationStatusEl.textContent = 'Animating...';
-                this.updateStatus('Animation started - cylinder moving to end location');
-            }
-            
-            updateAnimation() {
-                if (!this.isAnimating) return;
+                // Get world positions of start and end points
+                const startPos = this.gpsToWorld(this.userPosition, this.startLocation);
+                const endPos = this.gpsToWorld(this.userPosition, this.endLocation);
                 
-                const currentTime = Date.now();
-                const elapsed = currentTime - this.animationStartTime;
-                this.animationProgress = Math.min(elapsed / this.animationDuration, 1);
+                // Calculate center point between start and end
+                const centerX = (startPos.x + endPos.x) / 2;
+                const centerY = 0.5; // Slightly above ground
+                const centerZ = (startPos.z + endPos.z) / 2;
                 
-                // Smooth easing function (ease-in-out)
-                const eased = this.animationProgress < 0.5 
-                    ? 2 * this.animationProgress * this.animationProgress 
-                    : 1 - Math.pow(-2 * this.animationProgress + 2, 2) / 2;
+                // Position pipe at center point
+                this.pipeCylinder.position.set(centerX, centerY, centerZ);
                 
-                if (this.animationProgress >= 1) {
-                    this.isAnimating = false;
-                    this.animationStatusEl.textContent = 'Animation Complete';
-                    this.updateStatus('Animation completed - cylinder at end location');
-                } else {
-                    const progress = Math.round(eased * 100);
-                    this.animationStatusEl.textContent = `${progress}% complete`;
-                }
-            }
-            
-            updateCylinderPosition() {
-                if (this.userPosition.lat === 0 || !this.cylinder) return;
+                // Calculate distance and direction
+                const dx = endPos.x - startPos.x;
+                const dz = endPos.z - startPos.z;
+                const distance = Math.sqrt(dx * dx + dz * dz);
                 
-                let targetLocation;
+                // Update pipe length to match actual distance
+                this.pipeCylinder.scale.y = distance / this.calculateDistance(this.startLocation, this.endLocation);
                 
-                if (this.isAnimating) {
-                    // Interpolate between start and end locations during animation
-                    const progress = this.animationProgress < 0.5 
-                        ? 2 * this.animationProgress * this.animationProgress 
-                        : 1 - Math.pow(-2 * this.animationProgress + 2, 2) / 2;
-                    
-                    targetLocation = {
-                        lat: this.startLocation.lat + (this.endLocation.lat - this.startLocation.lat) * progress,
-                        lon: this.startLocation.lon + (this.endLocation.lon - this.startLocation.lon) * progress
-                    };
-                    
-                    // Change color during animation (blue to green)
-                    const color = new THREE.Color().lerpColors(
-                        new THREE.Color(0x0066ff), // Blue
-                        new THREE.Color(0x00ff00), // Green
-                        progress
-                    );
-                    this.cylinder.material.color = color;
-                    
-                } else {
-                    // Use start location when not animating
-                    targetLocation = this.startLocation;
-                    this.cylinder.material.color.setHex(0x0066ff); // Blue
-                }
-                
-                // Convert GPS coordinates to 3D position
-                const worldPos = this.gpsToWorld(this.userPosition, targetLocation);
-                
-                // Position cylinder
-                this.cylinder.position.set(worldPos.x, worldPos.y + 1.5, worldPos.z);
-                
-                // Add rotation animation
-                this.cylinder.rotation.y += 0.02;
+                // Rotate pipe to point from start to end
+                // Cylinder is vertical by default, so we need to rotate it to be horizontal
+                const angle = Math.atan2(dx, dz);
+                this.pipeCylinder.rotation.set(Math.PI / 2, 0, angle); // Rotate to horizontal and orient correctly
             }
             
             gpsToWorld(userPos, targetPos) {
@@ -670,8 +616,7 @@
             
             render() {
                 if (this.session) {
-                    this.updateAnimation();
-                    this.updateCylinderPosition();
+                    this.updatePipePosition();
                 }
                 this.renderer.render(this.scene, this.camera);
             }
