@@ -160,7 +160,7 @@
     <meta charset="utf-8" />
     <title>Pipe Network Web</title>
     <style>
-      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: black; }
+      html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #000; }
       #enter-ar { position: absolute;
       top: 30%;
       left: 50%;
@@ -226,8 +226,8 @@
           const pipe = makePipe(p1, p2, 0.05, material);
           scene.add(pipe);
 
-          const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
-          scene.add(light);
+          // const light = new THREE.HemisphereLight(0xffffff, 0xbbbbff, 1);
+          // scene.add(light);
 
           renderer.setAnimationLoop(() => {
             renderer.render(scene, camera);
