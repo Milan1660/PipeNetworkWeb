@@ -430,9 +430,13 @@
                 const geometry = new THREE.CylinderGeometry(0.5, 0.5, distance, 16); // Smaller radius, length = distance
                 const material = new THREE.MeshLambertMaterial({ color: 0xffff00 });
                 this.pipeCylinder = new THREE.Mesh(geometry, material);
+                
+                // Hide pipe initially
+                this.pipeCylinder.visible = false;
+                
                 this.scene.add(this.pipeCylinder);
                 
-                // Position and orient the pipe
+                // Position and orient the pipe (but keep it hidden)
                 this.updatePipePosition();
             }
             
@@ -604,10 +608,20 @@
                         this.updateStatus('AR session ended');
                         this.session = null;
                         this.arButton.textContent = 'Enter AR';
+                        
+                        // Hide the pipe when AR session ends
+                        if (this.pipeCylinder) {
+                            this.pipeCylinder.visible = false;
+                        }
                     });
                     
                     this.arButton.textContent = 'Exit AR';
                     this.updateStatus('AR session active');
+                    
+                    // Show the pipe when AR session starts
+                    if (this.pipeCylinder) {
+                        this.pipeCylinder.visible = true;
+                    }
                     
                 } catch (error) {
                     this.updateStatus(`Failed to start AR: ${error.message}`, true);
